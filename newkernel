@@ -1,0 +1,57 @@
+# vim: syntax=bash:
+die ( )
+{
+	err=$?
+	echo "$2" >&2
+	exit $err
+}
+parse_args(){
+local loc
+for i in ${args[@]}; do
+	{ [[ $i = "-c" ]] && export CLEAN=1; } || \
+	{ [[ $i = "-d" ]] && export DEBUG=1 && set -x; } || \
+        { [[ $i = "-q" ]] && export QUIET=1; } || \
+	{ [[ $i = "-v" ]] && export V=1; } || \
+	{ [[ $i = "-l" ]] || loc=1; } || \
+	{ [[ $loc -eq 1 ]] && export LOG_LOC=$i; }
+done
+[[ $loc -eq 1 && -n $LOG_LOC && -f $LOG_LOC]] || die "Sorry but you should sepcify a log location i"
+}
+args=( $@ )
+parse_args 
+
+#[[ $DEBUG -eq 1 ]] && set -x
+
+export KVER=$(realpath /usr/src/linux | xargs basename | cut -f 2- -d '-')
+export KCFLAGS="-O2 -mtls-dialect=gnu2 -march=native -mtune=native -fdevirtualize-at-ltrans -falign-functions=32:13:16 -falign-loops=32:13:16 -falign-jumps=32:13:16 -falign-labels=32:13:16 -malign-data=cacheline"
+#export KCPPFLAGS="-fvisibility-inlines-hidden"
+#export CFLAGS-y="-O2 -march=native -mtune=native -fdevirtualize-at-ltrans"
+export HOSTCFLAGS="$KCFLAGS -fuse-linker-plugin -flto=auto -fno-plt -fipa-pta"
+export HOSTCXXFLAGS="$HOSTCFLAGS $KCPPFLAGS -fvisibility-inlines-hidden"
+export HOSTLDFLAGS="-Wl,-O2 -Wl,--as-needed -Wl,-z,now -Wl,--sort-common"
+export LDFLAGS_MODULE="$HOSTLDFLAGS"
+export CFLAGS_MODULE="$HOSTCFLAGS"
+export INSTALL_MOD_STRIP=1
+MAKEOPTS="-j $(( $(nproc) * 3 / 2))"
+[[ $V -eq 1 ]]  && export MAKEOPTS="$MAKEOPTS V=1"
+echo $QUIET
+{ [[ $QUIET -eq 1 ]]  && export LOG_LOC="/dev/null"; } || \
+{ [[ -z $LOG_LOC ]] && export LOG_LOC="/var/log/newkernel.log"; }
+#exit
+{
+[[ $CLEAN -eq 1 ]] && { make -C /usr/src/linux $MAKEOPTS clean || die; } 
+make -C /usr/src/linux $MAKEOPTS bzImage || die 
+make -C /usr/src/linux $MAKEOPTS modules_prepare || die
+make -C /usr/src/linux $MAKEOPTS modules || die
+make -C /usr/src/linux $MAKEOPTS modules_install || die
+dkms autoinstall -k $KVER || die
+dracut /usr/src/linux/arch/x86/boot/initramfs --kver $KVER || die
+install -m644 /usr/src/linux/arch/x86/boot/bzImage /boot/vmlinuz-$KVER || die
+install -m644 /usr/src/linux/arch/x86/boot/initramfs /boot/initramfs-$KVER || die
+
+} 2>&1 | tee -a $LOG_LOC
+
+
+[[ $DEBUG -eq 1 ]] && set +x
+
+
